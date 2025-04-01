@@ -38,14 +38,14 @@ int main(){
     }
     
     char write_buf[]="hello";
-    int send_result=send(sockfd,write_buf,strlen(write_buf),0);
+    int send_result=send(sockfd,write_buf,strlen(write_buf),0);// send data to server
     if(send_result<0){
         die("send failed");
     }
     
     char read_buf[64]={};
     
-    ssize_t recv_result = recv(sockfd,read_buf,sizeof(read_buf)-1,0);
+    ssize_t recv_result = recv(sockfd,read_buf,sizeof(read_buf)-1,0);// receive data from server
     if(recv_result<0){
         die("send failed");
     }

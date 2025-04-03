@@ -1,4 +1,5 @@
 //header declarations
+#include <cstdint>
 #include <sys/socket.h>
 #include <stdio.h>
 #include <errno.h>
@@ -8,6 +9,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <string.h>
+#include <assert.h>
 
 //definitions
 #define PORT 2203
@@ -22,20 +24,76 @@ static void die(const char *msg){
     abort();
 }
 
-static void do_something(int conn_sd){
-    char read_buf[64]={};
-    ssize_t recv_result=recv(conn_sd,read_buf,sizeof(read_buf)-1,0);
-    if(recv_result<0){
-        msg("recv() failed");
+static int32_t read_full(int fd,char *buf,size_t n) { //read_full for more reliable read
+    
+    while(n>0){
+        
+        ssize_t rv=read(fd,buf,n);
+        
+        if(rv<=0){
+            return -1; //error
+        }
+        
+        assert(rv<=(ssize_t)n);
+        n-=rv;
+        buf+=rv;
+    }
+    return 0;
+}
+
+static int32_t write_all(int fd,const char *buf,size_t n) { //write_all for more reliable write  
+    
+    while(n>0){
+        
+        ssize_t rv=write(fd,buf,n);
+        
+        if(rv<=0){
+            return -1; //error
+        }
+        
+        assert(rv<=(ssize_t)n);
+        n-=rv;
+        buf+=rv;
+    }
+    return 0;
+}
+
+const size_t max_msg=4096; //maximum buffer size for payload
+
+static int32_t one_request(int conn_sd){
+   
+    char rbuf[4+max_msg]={};
+    errno=0;
+    int32_t err=read_full(conn_sd,rbuf,4);
+    if(err<0){
+        msg(errno==0?"Connection closed by client":"read() error");//identifying error cases
+        return -1;
     }
     
-    fprintf(stderr,"client says %s\n",read_buf);
-    
-    char write_buf[]="world";
-    ssize_t send_result=send(conn_sd,write_buf,strlen(write_buf),0);
-    if(send_result<0){
-        msg("send() failed");
+    uint32_t len=0;
+    memcpy(&len,rbuf,4);
+    if(len>max_msg){
+        msg("too long");
+        return -1;
     }
+    
+    err=read_full(conn_sd,rbuf+4,len);
+    if(err<0){
+        msg("read() error");
+        return err;
+    }
+    
+    fprintf(stderr,"client says: %.*s\n",len,rbuf+4);
+    
+    
+    //reply to the request
+    const char reply[]="world";
+    char wbuf[4+sizeof(reply)]={};
+    len=(uint32_t)strlen(reply);
+    memcpy(wbuf,&len,4);
+    memcpy(wbuf+4,reply,len);
+    
+    return write_all(conn_sd,wbuf,4+len);
 }
 
 int main() {
@@ -76,7 +134,12 @@ int main() {
             continue; //error, but continue accepting new connections
         }
         
-        do_something(connection_sd);
+        while(true){
+            int32_t err=one_request(connection_sd);
+            if(err<0){
+                break;
+            }
+        }
         
         close(connection_sd);
     }

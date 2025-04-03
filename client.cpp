@@ -8,14 +8,94 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <string.h>
+#include <assert.h>
 
 //definitions
 #define PORT 2203
+
+static void msg(const char *msg){
+    fprintf(stderr,"%s\n",msg);
+}
 
 static void die(const char *msg){
     int err=errno;
     fprintf(stderr,"[%d]:%s\n",err,msg);
     abort();
+}
+
+static int32_t read_full(int fd,char *buf,size_t n) {
+    
+    while(n>0){
+        
+        ssize_t rv=read(fd,buf,n);
+        
+        if(rv<=0){
+            return -1; //error
+        }
+        
+        assert(rv<=(ssize_t)n);
+        n-=rv;
+        buf+=rv;
+    }
+    return 0;
+}
+
+static int32_t write_all(int fd,const char *buf,size_t n) {
+    
+    while(n>0){
+        
+        ssize_t rv=write(fd,buf,n);
+        
+        if(rv<=0){
+            return -1; //error
+        }
+        
+        assert(rv<=(ssize_t)n);
+        n-=rv;
+        buf+=rv;
+    }
+    return 0;
+}
+
+const size_t max_msg=4096;
+
+static int32_t query(int conn_sd,const char* text){
+    uint32_t len=(uint32_t)strlen(text);
+    if(len>max_msg){
+        return -1;
+    }
+    
+    char wbuf[4+max_msg];
+    memcpy(wbuf,&len,4);
+    memcpy(wbuf+4,text,len);
+    int32_t err=write_all(conn_sd,wbuf,4+len);
+    if(err<0){
+        return -1;
+    }
+    
+    char rbuf[4+max_msg];
+    errno=0;
+    err=read_full(conn_sd, rbuf,4);
+    if(err<0){
+        msg(errno==0?"EOF":"read() failed");
+        return err;
+    }
+    
+    memcpy(&len,rbuf,4);
+    if(len>max_msg){
+        msg("too long");
+        return -1;
+    }
+    
+    err=read_full(conn_sd,rbuf+4,len);
+    if(err<0)
+    {
+        msg("read() error");
+        return -1;
+    }
+    
+    printf("server says: %.*s\n",len,rbuf+4);
+    return 0;
 }
 
 int main(){
@@ -37,20 +117,22 @@ int main(){
         die("connect() failed");
     }
     
-    char write_buf[]="hello";
-    int send_result=send(sockfd,write_buf,strlen(write_buf),0);// send data to server
-    if(send_result<0){
-        die("send failed");
+    int32_t err=query(sockfd,"hello1");
+    if(err){
+        goto L_DONE;
     }
     
-    char read_buf[64]={};
-    
-    ssize_t recv_result = recv(sockfd,read_buf,sizeof(read_buf)-1,0);// receive data from server
-    if(recv_result<0){
-        die("send failed");
+    err=query(sockfd,"hello2");
+    if(err){
+        goto L_DONE;
     }
     
-    printf("server says %s\n",read_buf);
+    err=query(sockfd,"hello3");
+    if(err){
+        goto L_DONE;
+    }
     
+L_DONE:
+    close(sockfd);
     return 0;
 }

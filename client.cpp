@@ -1,138 +1,145 @@
-//header declarations
-#include <sys/socket.h>
+#include <assert.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include <stdio.h>
 #include <errno.h>
-#include <sys/types.h>
 #include <unistd.h>
-#include <stdlib.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
-#include <string.h>
-#include <assert.h>
+#include <sys/socket.h>
+#include <netinet/ip.h>
+#include <string>
+#include <vector>
 
-//definitions
 #define PORT 2203
 
-static void msg(const char *msg){
-    fprintf(stderr,"%s\n",msg);
+static void msg(const char *msg) {
+    fprintf(stderr, "%s\n", msg);
 }
 
-static void die(const char *msg){
-    int err=errno;
-    fprintf(stderr,"[%d]:%s\n",err,msg);
+static void die(const char *msg) {
+    int err = errno;
+    fprintf(stderr, "[%d] %s\n", err, msg);
     abort();
 }
 
-static int32_t read_full(int fd,char *buf,size_t n) {
-    
-    while(n>0){
-        
-        ssize_t rv=read(fd,buf,n);
-        
-        if(rv<=0){
-            return -1; //error
+static int32_t read_full(int fd, uint8_t *buf, size_t n) {
+    while (n > 0) {
+        ssize_t rv = read(fd, buf, n);
+        if (rv <= 0) {
+            return -1;  // error, or unexpected EOF
         }
-        
-        assert(rv<=(ssize_t)n);
-        n-=rv;
-        buf+=rv;
+        assert((size_t)rv <= n);
+        n -= (size_t)rv;
+        buf += rv;
     }
     return 0;
 }
 
-static int32_t write_all(int fd,const char *buf,size_t n) {
-    
-    while(n>0){
-        
-        ssize_t rv=write(fd,buf,n);
-        
-        if(rv<=0){
-            return -1; //error
+static int32_t write_all(int fd, const uint8_t *buf, size_t n) {
+    while (n > 0) {
+        ssize_t rv = write(fd, buf, n);
+        if (rv <= 0) {
+            return -1;  // error
         }
-        
-        assert(rv<=(ssize_t)n);
-        n-=rv;
-        buf+=rv;
+        assert((size_t)rv <= n);
+        n -= (size_t)rv;
+        buf += rv;
     }
     return 0;
 }
 
-const size_t max_msg=4096;
+// append to the back
+static void
+buf_append(std::vector<uint8_t> &buf, const uint8_t *data, size_t len) {
+    buf.insert(buf.end(), data, data + len);
+}
 
-static int32_t query(int conn_sd,const char* text){
-    uint32_t len=(uint32_t)strlen(text);
-    if(len>max_msg){
+const size_t k_max_msg = 32 << 20;  // likely larger than the kernel buffer
+
+// the `query` function was simply splited into `send_req` and `read_res`.
+static int32_t send_req(int fd, const uint8_t *text, size_t len) {
+    if (len > k_max_msg) {
         return -1;
     }
-    
-    char wbuf[4+max_msg];
-    memcpy(wbuf,&len,4);
-    memcpy(wbuf+4,text,len);
-    int32_t err=write_all(conn_sd,wbuf,4+len);
-    if(err<0){
-        return -1;
-    }
-    
-    char rbuf[4+max_msg];
-    errno=0;
-    err=read_full(conn_sd, rbuf,4);
-    if(err<0){
-        msg(errno==0?"EOF":"read() failed");
+
+    std::vector<uint8_t> wbuf;
+    buf_append(wbuf, (const uint8_t *)&len, 4);
+    buf_append(wbuf, text, len);
+    return write_all(fd, wbuf.data(), wbuf.size());
+}
+
+static int32_t read_res(int fd) {
+    // 4 bytes header
+    std::vector<uint8_t> rbuf;
+    rbuf.resize(4);
+    errno = 0;
+    int32_t err = read_full(fd, &rbuf[0], 4);
+    if (err) {
+        if (errno == 0) {
+            msg("EOF");
+        } else {
+            msg("read() error");
+        }
         return err;
     }
-    
-    memcpy(&len,rbuf,4);
-    if(len>max_msg){
+
+    uint32_t len = 0;
+    memcpy(&len, rbuf.data(), 4);  // assume little endian
+    if (len > k_max_msg) {
         msg("too long");
         return -1;
     }
-    
-    err=read_full(conn_sd,rbuf+4,len);
-    if(err<0)
-    {
+
+    // reply body
+    rbuf.resize(4 + len);
+    err = read_full(fd, &rbuf[4], len);
+    if (err) {
         msg("read() error");
-        return -1;
+        return err;
     }
-    
-    printf("server says: %.*s\n",len,rbuf+4);
+
+    // do something
+    printf("len:%u data:%.*s\n", len, len < 100 ? len : 100, &rbuf[4]);
     return 0;
 }
 
-int main(){
-    int sockfd=socket(AF_INET,SOCK_STREAM,0);//create a socket on client machine
-    
-    if(sockfd<0){
-        die("socket() failed");
+int main() {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        die("socket()");
     }
-    
-    struct sockaddr_in addr={};
-    addr.sin_family=AF_INET;
-    addr.sin_port=htons(PORT);
-    addr.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
-    socklen_t socklen=sizeof(addr);
-    
-    int conn_result=connect(sockfd,(struct sockaddr*)&addr,socklen);
-    
-    if(conn_result<0){
-        die("connect() failed");
+
+    struct sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = ntohs(PORT);
+    addr.sin_addr.s_addr = ntohl(INADDR_LOOPBACK);  // 127.0.0.1
+    int rv = connect(fd, (const struct sockaddr *)&addr, sizeof(addr));
+    if (rv) {
+        die("connect");
     }
-    
-    int32_t err=query(sockfd,"hello1");
-    if(err){
-        goto L_DONE;
+
+    // multiple pipelined requests
+    std::vector<std::string> query_list = {
+        "hello1", "hello2", "hello3",
+        // a large message requires multiple event loop iterations
+        std::string(k_max_msg, 'z'),
+        "hello5",
+    };
+    for (const std::string &s : query_list) {
+        int32_t err = send_req(fd, (uint8_t *)s.data(), s.size());
+        if (err) {
+            goto L_DONE;
+        }
     }
-    
-    err=query(sockfd,"hello2");
-    if(err){
-        goto L_DONE;
+    for (size_t i = 0; i < query_list.size(); ++i) {
+        int32_t err = read_res(fd);
+        if (err) {
+            goto L_DONE;
+        }
     }
-    
-    err=query(sockfd,"hello3");
-    if(err){
-        goto L_DONE;
-    }
-    
+
 L_DONE:
-    close(sockfd);
+    close(fd);
     return 0;
 }

@@ -13,11 +13,15 @@
 #include <string.h>
 #include <assert.h>
 #include <vector>
+#include <string>
 #include <sys/epoll.h>
 #include <fcntl.h>
+#include <map>
 
 //definitions
 #define PORT 2203
+
+static std::map<std::string,std::string> g_data; //placeholder, will be implemented
 
 static void msg(const char *msg){
     fprintf(stderr,"%s\n",msg);
@@ -34,6 +38,7 @@ static void die(const char *msg){
 }
 
 const size_t max_msg=32<<20;
+const size_t max_args=200*1000;
 
 struct Conn{
     int fd=-1;
@@ -44,6 +49,12 @@ struct Conn{
     
     std::vector<uint8_t> incoming;
     std::vector<uint8_t> outgoing;
+};
+
+struct Response{
+    uint32_t status=0;
+    uint32_t len=0;
+    uint8_t *data=nullptr;
 };
 
 static void buf_consume(std::vector<uint8_t> &buf, size_t n){
@@ -70,6 +81,68 @@ static void fd_set_nb(int fd){
     }
 }
 
+enum {
+    RES_OK=0, //ok response
+    RES_ERR=1, // error
+    RES_NX=2 //not found
+};
+
+static bool read_u32(const uint8_t * &curr, const uint8_t *end,uint32_t &out){
+    if(curr+4>end){
+        return false;
+    }
+    
+    memcpy(&out,curr,4);
+    curr+=4;
+    return true;
+}
+
+static bool read_str(const uint8_t* &curr,const uint8_t *end,size_t n,std::string &out){
+    if(curr+n>end){
+        return false;
+    }
+    
+    out.assign(curr,curr+n);
+    curr+=n;
+    return true;
+}
+
+static int32_t parse_req(const uint8_t* data,size_t size,std::vector<std::string> &out){
+    const uint8_t *end=data+size;
+    uint32_t nstr=0;
+    if(!read_u32(data,end,nstr)){
+        return -1;
+    }
+    
+    if(nstr>max_args){
+        return -1;
+    }
+    
+    while(out.size()<nstr){
+        uint32_t len=0;
+        if(!read_u32(data,end,len)){
+            return -1;
+        }
+        out.push_back(std::string());
+        if(!read_str(data,end,len,out.back())){
+            return -1;
+        }
+    }
+    
+    if(data!=end){
+        return -1;
+    }
+    
+    return 0;
+}
+
+static void make_response(Response &resp,std::vector<uint8_t> &out){
+    uint32_t resp_len=4+resp.len;
+    buf_append(out,(const uint8_t*)&resp_len,4);
+    buf_append(out,(const uint8_t*)&resp.status,4);
+    if(resp.len>0)buf_append(out,(const uint8_t*)resp.data,resp.len);
+}
+
 static Conn* handle_accept(int fd){
     
     struct sockaddr_in client_addr={};
@@ -82,13 +155,37 @@ static Conn* handle_accept(int fd){
     }
     
     uint32_t ip=client_addr.sin_addr.s_addr;
-    fprintf(stderr,"new incoming connection from %u.%u.%u.%u:%u",ip & 255,(ip>>8) & 255,(ip>>16) & 255,(ip>>24)&255,ntohs(client_addr.sin_port));
+    fprintf(stderr,"new incoming connection from %u.%u.%u.%u:%u\n",ip & 255,(ip>>8) & 255,(ip>>16) & 255,(ip>>24)&255,ntohs(client_addr.sin_port));
     
     fd_set_nb(conn_fd);
     Conn * conn=new Conn();
     conn->fd=conn_fd;
     conn->want_read=true;
     return conn;
+}
+
+static void do_request(Response &resp, std::vector<std::string> &cmd){
+    
+    resp.status=0;
+    
+    if(cmd.size()==2 && cmd[0]=="get"){
+        auto it=g_data.find(cmd[1]);
+        if(it==g_data.end()){
+            resp.status=RES_NX;
+            return;
+        }
+        resp.len=it->second.size();
+        resp.data=(uint8_t*)it->second.data();
+    }
+    else if(cmd.size()==3 && cmd[0]=="set"){
+        g_data[cmd[1]].swap(cmd[2]);
+    }
+    else if(cmd.size()==2 && cmd[0]=="del"){
+        g_data.erase(cmd[1]);
+    }
+    else{
+        resp.status=RES_ERR;
+    }
 }
 
 static bool try_one_request(Conn *conn){
@@ -110,11 +207,14 @@ static bool try_one_request(Conn *conn){
     
     const uint8_t *request=&conn->incoming[4];
     //application logic
-    printf("client says: len:%d data:%.*s\n",len,len<100?len:100,request);
-    
-    //echo response
-    buf_append(conn->outgoing,(const uint8_t*)&len,4);
-    buf_append(conn->outgoing,request,len);
+    std::vector<std::string> cmd;
+    if(parse_req(request,len,cmd)<0){
+        conn->want_close=true;
+        return false;
+    }
+    Response resp;
+    do_request(resp,cmd);
+    make_response(resp,conn->outgoing);
     
     buf_consume(conn->incoming,(size_t)4+len);
     return true;

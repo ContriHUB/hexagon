@@ -44,15 +44,17 @@ It combines:
 
 ### Visual Workflow (Mermaid Diagram)
 
+### Visual Workflow (Mermaid Diagram)
+
 ```mermaid
 flowchart TD
-    A[Create socket] --> B[Event Loop (iteration)]
-    B --> C[Create new epoll fd<br/>Clear epoll events list]
-    C --> D[Add listening socket +<br/>all current connections to epoll]
+    A[Create socket] --> B[Event Loop iteration]
+    B --> C[Create new epoll fd & clear events]
+    C --> D[Add listening socket + connections]
     D --> E[Wait for events (epoll_wait)]
 
-    E -->|Event on listening socket| F[Accept new connection]
-    E -->|Event on connection (incoming data)| G[Read request buffer<br/>(custom protocol)]
+    E -->|Listening socket event| F[Accept new connection]
+    E -->|Connection event| G[Read request buffer]
 
     F --> H[Track connection in vector]
     G --> I[Parse request → Process request]
@@ -60,6 +62,7 @@ flowchart TD
     J --> K[Send back to client]
 
     K --> B
+
 
 ---
 

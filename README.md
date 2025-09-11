@@ -49,7 +49,7 @@ flowchart TD
     A[Create socket] --> B[Event Loop iteration]
     B --> C[Create new epoll fd & clear events]
     C --> D[Add listening socket + connections]
-    D --> E[Wait for events (epoll_wait)]
+    D --> E[Wait for events epoll_wait]
 
     E -->|Listening socket event| F[Accept new connection]
     E -->|Connection event| G[Read request buffer]

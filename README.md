@@ -44,8 +44,6 @@ It combines:
 
 ### Visual Workflow (Mermaid Diagram)
 
-### Visual Workflow (Mermaid Diagram)
-
 ```mermaid
 flowchart TD
     A[Create socket] --> B[Event Loop iteration]
@@ -62,7 +60,7 @@ flowchart TD
     J --> K[Send back to client]
 
     K --> B
-
+```
 
 ---
 

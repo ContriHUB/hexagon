@@ -26,6 +26,43 @@ It combines:
 
 ---
 
+## Workflow
+1. Listening socket is created.  
+2. In every loop iteration, a **new epoll fd** is created.  
+3. The listening socket and all active connections are added to this epoll instance.  
+4. `epoll_wait` waits for events from either the listening socket or the active connections.  
+5. If the event is on the listening socket → accept new connections and add them to the connections vector.  
+6. If the event is on a connection → read request data.  
+7. Requests follow a custom protocol:  
+   - Number of strings  
+   - Length of first string, first string  
+   - Length of second string, second string  
+   - … and so on.  
+8. The server parses the request according to this protocol.  
+9. The request is processed (`get`, `set`, `del`) and a response is generated with a response code and optional payload.  
+10. Response is written back to the client.  
+
+### Visual Workflow (Mermaid Diagram)
+
+```mermaid
+flowchart TD
+    A[Create socket] --> B[Event Loop (iteration)]
+    B --> C[Create new epoll fd<br/>Clear epoll events list]
+    C --> D[Add listening socket +<br/>all current connections to epoll]
+    D --> E[Wait for events (epoll_wait)]
+
+    E -->|Event on listening socket| F[Accept new connection]
+    E -->|Event on connection (incoming data)| G[Read request buffer<br/>(custom protocol)]
+
+    F --> H[Track connection in vector]
+    G --> I[Parse request → Process request]
+    I --> J[Generate Response]
+    J --> K[Send back to client]
+
+    K --> B
+
+---
+
 ## Getting Started
 
 ### Prerequisites

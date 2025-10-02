@@ -1,0 +1,9 @@
+#build Directory
+bin/
+obj/
+
+# Compiled bin
+server
+client
+*.out
+*.exe

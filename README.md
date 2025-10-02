@@ -74,24 +74,19 @@ flowchart TD
 
 Compile the server:
 ```bash
-g++ -std=c++11 -O2 server.cpp -o server
-```
-
-Compile the client:
-```bash
-g++ -std=c++11 -O2 client.cpp -o client
+make 
 ```
 
 ### Run
 
 Start the server:
 ```bash
-./server
+make run-server
 ```
 
 In another terminal, run the client:
 ```bash
-./client
+make run-client ARGS = '<cmd>'
 ```
 
 The client will send requests, and the server will respond using the in-memory, event-driven architecture.

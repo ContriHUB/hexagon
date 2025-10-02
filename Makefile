@@ -11,10 +11,10 @@ BIN_DIR := bin
 # Find all source files
 SOURCES := $(wildcard $(SRC_DIR)/*.cpp)
 
-# Generate object file names
+# Generate obj
 OBJECTS := $(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(SOURCES))
 
-# Generate binary names (one per source file)
+# Generate bin
 BINARIES := $(patsubst $(SRC_DIR)/%.cpp,$(BIN_DIR)/%,$(SOURCES))
 
 # Default target
@@ -27,17 +27,17 @@ $(OBJ_DIR) $(BIN_DIR):
 	@mkdir -p $@
 	@echo "Created directory: $@"
 
-# Compile source files to object files
+# Compile source files to obj
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OBJ_DIR)
 	@echo "Compiling: $< -> $@"
 	@$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# Link object files to binaries
+# Link object files to bin
 $(BIN_DIR)/%: $(OBJ_DIR)/%.o | $(BIN_DIR)
 	@echo "Linking: $< -> $@"
 	@$(CXX) $(LDFLAGS) $< -o $@
 
-# Run a specific binary
+# Run a specific bin
 .PHONY: run
 run:
 	@if [ -z "$(NAME)" ]; then \
@@ -116,7 +116,7 @@ help:
 	@echo "  make run NAME=server"
 	@echo "  make run NAME=client ARGS='del mykey'"
 
-# Debug target - show makefile variables
+# Debug target
 .PHONY: debug
 debug:
 	@echo "Makefile Debug Information:"
@@ -130,4 +130,4 @@ debug:
 	@echo "OBJECTS    = $(OBJECTS)"
 	@echo "BINARIES   = $(BINARIES)"
 
-.PHONY: all clean rebuild run run-server run-client test list tree help debug
+.PHONY: all clean rebuild run run-server run-client help debug

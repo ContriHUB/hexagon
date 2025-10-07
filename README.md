@@ -15,14 +15,20 @@ It combines:
 - Low-latency in-memory data retrieval  
 - High concurrency support using non-blocking event-driven I/O  
 - Request pipelining for efficient request-response handling  
-- Single-threaded design with high throughput  
+- Single-threaded design with high throughput
+- **TTL (Time-To-Live) expiration** - Automatic cleanup of expired entries
+- **LRU (Least Recently Used) eviction** - Remove least recently accessed entries
+- **LFU (Least Frequently Used) eviction** - Remove least frequently accessed entries
+- **Background cleanup thread** - Automatic expired entry removal  
 
 ---
 
 ## Architecture
 1. **In-Memory Data Store** – Minimizes disk I/O by keeping data in memory.  
 2. **Event-Driven I/O** – Uses `epoll()` to manage concurrent client connections.  
-3. **Request Pipelining** – Processes multiple requests without waiting for sequential responses.  
+3. **Request Pipelining** – Processes multiple requests without waiting for sequential responses.
+4. **Expiration Mechanisms** – TTL, LRU, and LFU for automatic entry management.
+5. **Thread-Safe Operations** – Mutex-protected data structures for concurrent access.  
 
 ---
 
@@ -90,6 +96,52 @@ make run-client ARGS = '<cmd>'
 ```
 
 The client will send requests, and the server will respond using the in-memory, event-driven architecture.
+
+---
+
+## Expiration Commands
+
+### TTL (Time-To-Live) Commands
+```bash
+# Set a key with TTL expiration (expires in 60 seconds)
+./client set ex mykey myvalue 60
+
+# Check remaining TTL for a key
+./client ttl mykey
+
+# Regular set (no expiration)
+./client set mykey myvalue
+```
+
+### LRU (Least Recently Used) Commands
+```bash
+# Evict the least recently used entry
+./client lru_evict
+```
+
+### LFU (Least Frequently Used) Commands
+```bash
+# Evict the least frequently used entry
+./client lfu_evict
+```
+
+### Standard Commands (with expiration support)
+```bash
+# Get a value (updates LRU and LFU tracking)
+./client get mykey
+
+# Set a value (adds to LRU and LFU tracking)
+./client set mykey myvalue
+
+# Delete a value (removes from all tracking structures)
+./client del mykey
+```
+
+### Testing Expiration
+Run the test script to see all expiration mechanisms in action:
+```bash
+./test_expiration.sh
+```
 
 ---
 

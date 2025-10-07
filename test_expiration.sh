@@ -2,7 +2,7 @@
 
 # Test script for expiration mechanisms
 echo "Testing TTL (Time-To-Live) expiration..."
-./client set ex "test_key" "test_value" 5
+./client set ex test_key test_value 5
 echo "Set key with 5 second TTL"
 ./client get test_key
 echo "Getting key immediately (should work)"

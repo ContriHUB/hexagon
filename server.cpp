@@ -30,6 +30,7 @@
 // Data structures for expiration support
 struct Entry {
     std::string value;
+    std::string ttl; // cached TTL string for response lifetime
     std::chrono::steady_clock::time_point created_at;
     std::chrono::steady_clock::time_point expires_at;
     size_t access_count = 0;
@@ -64,9 +65,10 @@ static void update_lru(const std::string& key) {
 static void update_lfu(const std::string& key) {
     auto it = g_data.find(key);
     if (it != g_data.end()) {
-        // Remove from old frequency list
-        if (it->second.access_count > 0) {
-            auto freq_it = lfu_key_to_freq[key];
+        // Remove from old frequency list (including freq 0)
+        auto k2f = lfu_key_to_freq.find(key);
+        if (k2f != lfu_key_to_freq.end()) {
+            auto freq_it = k2f->second;
             freq_it->second.erase(it->second.lfu_it);
             if (freq_it->second.empty()) {
                 lfu_map.erase(freq_it);
@@ -263,11 +265,11 @@ static Conn* handle_accept(int fd){
 }
 
 static void do_request(Response &resp, std::vector<std::string> &cmd){
-    std::lock_guard<std::mutex> lock(g_data_mutex);
     resp.status=0;
     
-    // Clean up expired entries before processing
+    // Clean up expired entries before acquiring mutex to avoid deadlock
     cleanup_expired();
+    std::lock_guard<std::mutex> lock(g_data_mutex);
     
     if(cmd.size()==2 && cmd[0]=="get"){
         auto it=g_data.find(cmd[1]);
@@ -304,14 +306,14 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
         entry.lfu_it = freq_it->second.begin();
         lfu_key_to_freq[cmd[1]] = freq_it;
     }
-    else if(cmd.size()==4 && cmd[0]=="set" && cmd[1]=="ex"){
-        // SET key value EX seconds
+    else if(cmd.size()==5 && cmd[0]=="set" && cmd[1]=="ex"){
+        // set ex key value seconds
         auto now = std::chrono::steady_clock::now();
-        int seconds = std::stoi(cmd[3]);
+        int seconds = std::stoi(cmd[4]);
         auto expires_at = now + std::chrono::seconds(seconds);
         
         Entry& entry = g_data[cmd[2]];
-        entry.value = cmd[2];
+        entry.value = cmd[3];
         entry.created_at = now;
         entry.expires_at = expires_at;
         entry.has_ttl = true;
@@ -371,11 +373,11 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
         
         auto now = std::chrono::steady_clock::now();
         auto remaining = std::chrono::duration_cast<std::chrono::seconds>(it->second.expires_at - now).count();
-        std::string ttl_str = std::to_string(remaining);
-        resp.len = ttl_str.size();
-        resp.data = (uint8_t*)ttl_str.data();
+        it->second.ttl = std::to_string(remaining);
+        resp.len = it->second.ttl.size();
+        resp.data = (uint8_t*)it->second.ttl.data();
     }
-    else if(cmd.size()==2 && cmd[0]=="lru_evict"){
+    else if(cmd.size()==1 && cmd[0]=="lru_evict"){
         // Evict least recently used entry
         if (lru_list.empty()) {
             resp.status = RES_ERR;
@@ -406,7 +408,7 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
             g_data.erase(it);
         }
     }
-    else if(cmd.size()==2 && cmd[0]=="lfu_evict"){
+    else if(cmd.size()==1 && cmd[0]=="lfu_evict"){
         // Evict least frequently used entry
         if (lfu_map.empty()) {
             resp.status = RES_ERR;

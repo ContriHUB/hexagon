@@ -47,8 +47,44 @@ struct Conn{
     bool want_write=false;
     bool want_close=false;
     
-    std::vector<uint8_t> incoming;
-    std::vector<uint8_t> outgoing;
+    // Efficient FIFO buffers for incoming/outgoing data
+    // Use a sliding-head vector to allow O(1) amortized pop-front without memmove on every consume
+    struct Buffer {
+        std::vector<uint8_t> buf;
+        size_t head = 0;
+
+        size_t size() const {
+            return buf.size() - head;
+        }
+
+        uint8_t* data() {
+            return buf.data() + head;
+        }
+
+        const uint8_t* data() const {
+            return buf.data() + head;
+        }
+
+        void append(const uint8_t* data_ptr, size_t len) {
+            if (len == 0) return;
+            buf.insert(buf.end(), data_ptr, data_ptr + len);
+        }
+
+        void consume(size_t n) {
+            head += n;
+            if (head > buf.size()) {
+                head = buf.size();
+            }
+            // Compact when head grows large to reclaim space; amortized O(1)
+            if (head >= 4096 && head * 2 >= buf.size()) {
+                buf.erase(buf.begin(), buf.begin() + head);
+                head = 0;
+            }
+        }
+    };
+
+    Buffer incoming;
+    Buffer outgoing;
 };
 
 struct Response{
@@ -57,13 +93,7 @@ struct Response{
     uint8_t *data=nullptr;
 };
 
-static void buf_consume(std::vector<uint8_t> &buf, size_t n){
-    buf.erase(buf.begin(),buf.begin()+n);
-}
-
-static void buf_append(std::vector<uint8_t> &buf,const uint8_t * data,size_t len){
-    buf.insert(buf.end(),data,data+len);
-}
+// Removed vector-based FIFO helpers; replaced by Conn::Buffer methods
 
 static void fd_set_nb(int fd){
     
@@ -138,9 +168,20 @@ static int32_t parse_req(const uint8_t* data,size_t size,std::vector<std::string
 
 static void make_response(Response &resp,std::vector<uint8_t> &out){
     uint32_t resp_len=4+resp.len;
-    buf_append(out,(const uint8_t*)&resp_len,4);
-    buf_append(out,(const uint8_t*)&resp.status,4);
-    if(resp.len>0)buf_append(out,(const uint8_t*)resp.data,resp.len);
+    // Adapt to Conn::Buffer when used
+    // This overload remains for compatibility when called with a raw vector, but in this code
+    // path we will pass Conn::Buffer, so an overload below handles it.
+    out.insert(out.end(), (const uint8_t*)&resp_len, (const uint8_t*)&resp_len + 4);
+    out.insert(out.end(), (const uint8_t*)&resp.status, (const uint8_t*)&resp.status + 4);
+    if(resp.len>0) out.insert(out.end(), (const uint8_t*)resp.data, (const uint8_t*)resp.data + resp.len);
+}
+
+// Overload for Conn::Buffer
+static void make_response(Response &resp, Conn::Buffer &out){
+    uint32_t resp_len=4+resp.len;
+    out.append((const uint8_t*)&resp_len,4);
+    out.append((const uint8_t*)&resp.status,4);
+    if(resp.len>0) out.append((const uint8_t*)resp.data,resp.len);
 }
 
 static Conn* handle_accept(int fd){
@@ -205,7 +246,7 @@ static bool try_one_request(Conn *conn){
         return false;//want read
     }
     
-    const uint8_t *request=&conn->incoming[4];
+    const uint8_t *request=conn->incoming.data()+4;
     //application logic
     std::vector<std::string> cmd;
     if(parse_req(request,len,cmd)<0){
@@ -216,13 +257,13 @@ static bool try_one_request(Conn *conn){
     do_request(resp,cmd);
     make_response(resp,conn->outgoing);
     
-    buf_consume(conn->incoming,(size_t)4+len);
+    conn->incoming.consume((size_t)4+len);
     return true;
 }
 
 static void handle_write(Conn * conn){
     assert(conn->outgoing.size()>0);
-    ssize_t rv=write(conn->fd,&conn->outgoing[0],conn->outgoing.size());
+    ssize_t rv=write(conn->fd, conn->outgoing.data(), conn->outgoing.size());
     if(rv<0 && errno==(EAGAIN|EWOULDBLOCK)){
         return;//Socket not ready
     }
@@ -233,7 +274,7 @@ static void handle_write(Conn * conn){
         return;
     }
     
-    buf_consume(conn->outgoing,(size_t)rv);
+    conn->outgoing.consume((size_t)rv);
     
     if(conn->outgoing.size()==0){
         conn->want_read=true;
@@ -264,7 +305,7 @@ static void handle_read(Conn * conn){
         return;
     }
     
-    buf_append(conn->incoming,buf,(size_t)rv);
+    conn->incoming.append(buf,(size_t)rv);
     
     while(try_one_request(conn)){}
     

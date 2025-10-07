@@ -20,9 +20,9 @@
 #include <chrono>
 #include <thread>
 #include <mutex>
-#include <unordered_map>
 #include <list>
 #include <set>
+#include "ProgressiveHashMap.h"
 
 //definitions
 #define PORT 2203
@@ -39,7 +39,7 @@ struct Entry {
     bool has_ttl = false;
 };
 
-static std::unordered_map<std::string, Entry> g_data;
+static ProgressiveHashMap<std::string, Entry> g_data;
 static std::mutex g_data_mutex;
 
 // LRU tracking
@@ -47,28 +47,28 @@ static std::list<std::string> lru_list;
 
 // LFU tracking (frequency -> list of keys)
 static std::map<size_t, std::list<std::string>> lfu_map;
-static std::unordered_map<std::string, std::map<size_t, std::list<std::string>>::iterator> lfu_key_to_freq;
+static std::map<std::string, std::map<size_t, std::list<std::string>>::iterator> lfu_key_to_freq;
 
 // TTL tracking
 static std::set<std::pair<std::chrono::steady_clock::time_point, std::string>> ttl_set;
 
 // Helper functions for expiration mechanisms
 static void update_lru(const std::string& key) {
-    auto it = g_data.find(key);
-    if (it != g_data.end()) {
-        lru_list.erase(it->second.lru_it);
+    Entry* entry = g_data.lookup(key);
+    if (entry) {
+        lru_list.erase(entry->lru_it);
         lru_list.push_front(key);
-        it->second.lru_it = lru_list.begin();
+        entry->lru_it = lru_list.begin();
     }
 }
 
 static void update_lfu(const std::string& key) {
-    auto it = g_data.find(key);
-    if (it != g_data.end()) {
+    Entry* entry = g_data.lookup(key);
+    if (entry) {
         // Remove from LFU tracking
-        if (it->second.access_count >= 0) {
+        if (entry->access_count >= 0) {
             auto freq_it = lfu_key_to_freq[key];
-            freq_it->second.erase(it->second.lfu_it);
+            freq_it->second.erase(entry->lfu_it);
             if (freq_it->second.empty()) {
                 lfu_map.erase(freq_it);
             }
@@ -76,15 +76,15 @@ static void update_lfu(const std::string& key) {
         }
         
         // Update access count
-        it->second.access_count++;
+        entry->access_count++;
         
         // Add to new frequency list
-        auto new_freq_it = lfu_map.find(it->second.access_count);
+        auto new_freq_it = lfu_map.find(entry->access_count);
         if (new_freq_it == lfu_map.end()) {
-            new_freq_it = lfu_map.insert({it->second.access_count, std::list<std::string>()}).first;
+            new_freq_it = lfu_map.insert({entry->access_count, std::list<std::string>()}).first;
         }
         new_freq_it->second.push_front(key);
-        it->second.lfu_it = new_freq_it->second.begin();
+        entry->lfu_it = new_freq_it->second.begin();
         lfu_key_to_freq[key] = new_freq_it;
     }
 }
@@ -102,22 +102,22 @@ static void cleanup_expired() {
     auto ttl_it = ttl_set.begin();
     while (ttl_it != ttl_set.end() && ttl_it->first <= now) {
         const std::string& key = ttl_it->second;
-        auto data_it = g_data.find(key);
-        if (data_it != g_data.end()) {
+        Entry* entry = g_data.lookup(key);
+        if (entry) {
             // Remove from LRU list
-            lru_list.erase(data_it->second.lru_it);
+            lru_list.erase(entry->lru_it);
             
             // Remove from LFU tracking
-            if (data_it->second.access_count >= 0) {
+            if (entry->access_count >= 0) {
                 auto freq_it = lfu_key_to_freq[key];
-                freq_it->second.erase(data_it->second.lfu_it);
+                freq_it->second.erase(entry->lfu_it);
                 if (freq_it->second.empty()) {
                     lfu_map.erase(freq_it);
                 }
                 lfu_key_to_freq.erase(key);
             }
             
-            g_data.erase(data_it);
+            g_data.del(key);
         }
         ttl_set.erase(ttl_it++);
     }
@@ -313,8 +313,8 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
     std::lock_guard<std::mutex> lock(g_data_mutex);
     
     if(cmd.size()==2 && cmd[0]=="get"){
-        auto it=g_data.find(cmd[1]);
-        if(it==g_data.end() || is_expired(it->second)){
+        Entry* entry = g_data.lookup(cmd[1]);
+        if(!entry || is_expired(*entry)){
             resp.status=RES_NX;
             return;
         }
@@ -323,12 +323,12 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
         update_lru(cmd[1]);
         update_lfu(cmd[1]);
         
-        resp.len=it->second.value.size();
-        resp.data=(uint8_t*)it->second.value.data();
+        resp.len=entry->value.size();
+        resp.data=(uint8_t*)entry->value.data();
     }
     else if(cmd.size()==3 && cmd[0]=="set"){
         auto now = std::chrono::steady_clock::now();
-        Entry& entry = g_data[cmd[1]];
+        Entry entry;
         entry.value = cmd[2];
         entry.created_at = now;
         entry.has_ttl = false;
@@ -346,6 +346,8 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
         freq_it->second.push_front(cmd[1]);
         entry.lfu_it = freq_it->second.begin();
         lfu_key_to_freq[cmd[1]] = freq_it;
+        
+        g_data.set(cmd[1], entry);
     }
     else if(cmd.size()==5 && cmd[0]=="set" && cmd[1]=="ex"){
         // set ex key value seconds
@@ -353,7 +355,7 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
         int seconds = std::stoi(cmd[4]);
         auto expires_at = now + std::chrono::seconds(seconds);
         
-        Entry& entry = g_data[cmd[2]];
+        Entry entry;
         entry.value = cmd[3];
         entry.created_at = now;
         entry.expires_at = expires_at;
@@ -375,17 +377,19 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
         freq_it->second.push_front(cmd[2]);
         entry.lfu_it = freq_it->second.begin();
         lfu_key_to_freq[cmd[2]] = freq_it;
+        
+        g_data.set(cmd[2], entry);
     }
     else if(cmd.size()==2 && cmd[0]=="del"){
-        auto it = g_data.find(cmd[1]);
-        if (it != g_data.end()) {
+        Entry* entry = g_data.lookup(cmd[1]);
+        if (entry) {
             // Remove from LRU list
-            lru_list.erase(it->second.lru_it);
+            lru_list.erase(entry->lru_it);
             
             // Remove from LFU tracking
-            if (it->second.access_count >= 0) {
+            if (entry->access_count >= 0) {
                 auto freq_it = lfu_key_to_freq[cmd[1]];
-                freq_it->second.erase(it->second.lfu_it);
+                freq_it->second.erase(entry->lfu_it);
                 if (freq_it->second.empty()) {
                     lfu_map.erase(freq_it);
                 }
@@ -393,30 +397,30 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
             }
             
             // Remove from TTL tracking
-            if (it->second.has_ttl) {
-                ttl_set.erase({it->second.expires_at, cmd[1]});
+            if (entry->has_ttl) {
+                ttl_set.erase({entry->expires_at, cmd[1]});
             }
             
-            g_data.erase(it);
+            g_data.del(cmd[1]);
         }
     }
     else if(cmd.size()==2 && cmd[0]=="ttl"){
-        auto it = g_data.find(cmd[1]);
-        if(it==g_data.end() || is_expired(it->second)){
+        Entry* entry = g_data.lookup(cmd[1]);
+        if(!entry || is_expired(*entry)){
             resp.status=RES_NX;
             return;
         }
         
-        if (!it->second.has_ttl) {
+        if (!entry->has_ttl) {
             resp.status = RES_ERR;
             return;
         }
         
         auto now = std::chrono::steady_clock::now();
-        auto remaining = std::chrono::duration_cast<std::chrono::seconds>(it->second.expires_at - now).count();
-        it->second.ttl = std::to_string(remaining);
-        resp.len = it->second.ttl.size();
-        resp.data = (uint8_t*)it->second.ttl.data();
+        auto remaining = std::chrono::duration_cast<std::chrono::seconds>(entry->expires_at - now).count();
+        entry->ttl = std::to_string(remaining);
+        resp.len = entry->ttl.size();
+        resp.data = (uint8_t*)entry->ttl.data();
     }
     else if(cmd.size()==1 && cmd[0]=="lru_evict"){
         // Evict least recently used entry
@@ -426,15 +430,15 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
         }
         
         std::string key_to_evict = lru_list.back();
-        auto it = g_data.find(key_to_evict);
-        if (it != g_data.end()) {
+        Entry* entry = g_data.lookup(key_to_evict);
+        if (entry) {
             // Remove from LRU list
-            lru_list.erase(it->second.lru_it);
+            lru_list.erase(entry->lru_it);
             
             // Remove from LFU tracking
-            if (it->second.access_count >= 0) {
+            if (entry->access_count >= 0) {
                 auto freq_it = lfu_key_to_freq[key_to_evict];
-                freq_it->second.erase(it->second.lfu_it);
+                freq_it->second.erase(entry->lfu_it);
                 if (freq_it->second.empty()) {
                     lfu_map.erase(freq_it);
                 }
@@ -442,11 +446,11 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
             }
             
             // Remove from TTL tracking
-            if (it->second.has_ttl) {
-                ttl_set.erase({it->second.expires_at, key_to_evict});
+            if (entry->has_ttl) {
+                ttl_set.erase({entry->expires_at, key_to_evict});
             }
             
-            g_data.erase(it);
+            g_data.del(key_to_evict);
         }
     }
     else if(cmd.size()==1 && cmd[0]=="lfu_evict"){
@@ -458,15 +462,15 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
         
         auto least_freq_it = lfu_map.begin();
         std::string key_to_evict = least_freq_it->second.back();
-        auto it = g_data.find(key_to_evict);
-        if (it != g_data.end()) {
+        Entry* entry = g_data.lookup(key_to_evict);
+        if (entry) {
             // Remove from LRU list
-            lru_list.erase(it->second.lru_it);
+            lru_list.erase(entry->lru_it);
             
             // Remove from LFU tracking
-            if (it->second.access_count >= 0) {
+            if (entry->access_count >= 0) {
                 auto freq_it = lfu_key_to_freq[key_to_evict];
-                freq_it->second.erase(it->second.lfu_it);
+                freq_it->second.erase(entry->lfu_it);
                 if (freq_it->second.empty()) {
                     lfu_map.erase(freq_it);
                 }
@@ -474,11 +478,11 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
             }
             
             // Remove from TTL tracking
-            if (it->second.has_ttl) {
-                ttl_set.erase({it->second.expires_at, key_to_evict});
+            if (entry->has_ttl) {
+                ttl_set.erase({entry->expires_at, key_to_evict});
             }
             
-            g_data.erase(it);
+            g_data.del(key_to_evict);
         }
     }
     else{
@@ -704,4 +708,3 @@ int main() {
     }
     
     return 0;
-}

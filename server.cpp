@@ -65,14 +65,14 @@ static void update_lru(const std::string& key) {
 static void update_lfu(const std::string& key) {
     auto it = g_data.find(key);
     if (it != g_data.end()) {
-        // Remove from old frequency list (including freq 0)
-        auto k2f = lfu_key_to_freq.find(key);
-        if (k2f != lfu_key_to_freq.end()) {
-            auto freq_it = k2f->second;
+        // Remove from LFU tracking
+        if (it->second.access_count >= 0) {
+            auto freq_it = lfu_key_to_freq[key];
             freq_it->second.erase(it->second.lfu_it);
             if (freq_it->second.empty()) {
                 lfu_map.erase(freq_it);
             }
+            lfu_key_to_freq.erase(key);
         }
         
         // Update access count
@@ -108,7 +108,7 @@ static void cleanup_expired() {
             lru_list.erase(data_it->second.lru_it);
             
             // Remove from LFU tracking
-            if (data_it->second.access_count > 0) {
+            if (data_it->second.access_count >= 0) {
                 auto freq_it = lfu_key_to_freq[key];
                 freq_it->second.erase(data_it->second.lfu_it);
                 if (freq_it->second.empty()) {
@@ -383,7 +383,7 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
             lru_list.erase(it->second.lru_it);
             
             // Remove from LFU tracking
-            if (it->second.access_count > 0) {
+            if (it->second.access_count >= 0) {
                 auto freq_it = lfu_key_to_freq[cmd[1]];
                 freq_it->second.erase(it->second.lfu_it);
                 if (freq_it->second.empty()) {
@@ -432,7 +432,7 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
             lru_list.erase(it->second.lru_it);
             
             // Remove from LFU tracking
-            if (it->second.access_count > 0) {
+            if (it->second.access_count >= 0) {
                 auto freq_it = lfu_key_to_freq[key_to_evict];
                 freq_it->second.erase(it->second.lfu_it);
                 if (freq_it->second.empty()) {
@@ -464,7 +464,7 @@ static void do_request(Response &resp, std::vector<std::string> &cmd){
             lru_list.erase(it->second.lru_it);
             
             // Remove from LFU tracking
-            if (it->second.access_count > 0) {
+            if (it->second.access_count >= 0) {
                 auto freq_it = lfu_key_to_freq[key_to_evict];
                 freq_it->second.erase(it->second.lfu_it);
                 if (freq_it->second.empty()) {

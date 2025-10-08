@@ -35,6 +35,9 @@ private:
         }
         
         ~HashTable() {
+            clear();
+        }
+        void clear() {
             for (Entry* head : buckets) {
                 while (head) {
                     Entry* next = head->next;
@@ -42,11 +45,14 @@ private:
                     head = next;
                 }
             }
+            buckets.clear();
         }
         
         // Clear buckets without deleting entries (for migration)
         void clear_without_delete() {
-            buckets.clear();
+            for (size_t i = 0; i < buckets.size(); i++) {
+                buckets[i] = nullptr;
+            }
         }
     };
     
@@ -206,30 +212,25 @@ public:
                 }
             }
             
-            // If we're in ht2 or no ht2 exists, we're done
-            if (in_ht2 || !map->ht2) {
-                current_table = nullptr;
-                current_entry = nullptr;
+            // If we're in ht2 or no ht2 exists, switch to ht1 if possible
+            if (in_ht2 && map->ht1) {
+                current_table = map->ht1;
                 bucket_idx = 0;
-                return;
-            }
-            
-            // Switch to ht1
-            current_table = map->ht1;
-            bucket_idx = 0;
-            in_ht2 = false;
-            
-            while (bucket_idx < current_table->buckets.size()) {
-                if (current_table->buckets[bucket_idx]) {
-                    current_entry = current_table->buckets[bucket_idx];
-                    return;
+                in_ht2 = false;
+                
+                while (bucket_idx < current_table->buckets.size()) {
+                    if (current_table->buckets[bucket_idx]) {
+                        current_entry = current_table->buckets[bucket_idx];
+                        return;
+                    }
+                    bucket_idx++;
                 }
-                bucket_idx++;
             }
             
             // Reached end
             current_table = nullptr;
             current_entry = nullptr;
+            bucket_idx = 0;
         }
         
     public:
@@ -310,30 +311,25 @@ public:
                 }
             }
             
-            // If we're in ht2 or no ht2 exists, we're done
-            if (in_ht2 || !map->ht2) {
-                current_table = nullptr;
-                current_entry = nullptr;
+            // If we're in ht2 or no ht2 exists, switch to ht1 if possible
+            if (in_ht2 && map->ht1) {
+                current_table = map->ht1;
                 bucket_idx = 0;
-                return;
-            }
-            
-            // Switch to ht1
-            current_table = map->ht1;
-            bucket_idx = 0;
-            in_ht2 = false;
-            
-            while (bucket_idx < current_table->buckets.size()) {
-                if (current_table->buckets[bucket_idx]) {
-                    current_entry = current_table->buckets[bucket_idx];
-                    return;
+                in_ht2 = false;
+                
+                while (bucket_idx < current_table->buckets.size()) {
+                    if (current_table->buckets[bucket_idx]) {
+                        current_entry = current_table->buckets[bucket_idx];
+                        return;
+                    }
+                    bucket_idx++;
                 }
-                bucket_idx++;
             }
             
             // Reached end
             current_table = nullptr;
             current_entry = nullptr;
+            bucket_idx = 0;
         }
         
     public:
@@ -607,4 +603,4 @@ public:
     }
 };
 
-#endif // PROGRESSIVE_HASHMAP_
+#endif // PROGRESSIVE_HASHMAP_H

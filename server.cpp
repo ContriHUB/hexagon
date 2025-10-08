@@ -22,7 +22,7 @@
 #include <mutex>
 #include <list>
 #include <set>
-#include "ProgressiveHashMap.h"
+#include "progressive_hashmap.h"
 
 //definitions
 #define PORT 2203
